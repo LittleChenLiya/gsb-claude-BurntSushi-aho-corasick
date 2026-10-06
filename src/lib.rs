@@ -257,6 +257,7 @@ mod ahocorasick;
 pub mod automaton;
 pub mod dfa;
 pub mod nfa;
+pub mod occlusion;
 pub mod packed;
 #[cfg(test)]
 mod tests;
