@@ -257,6 +257,7 @@ mod ahocorasick;
 pub mod automaton;
 pub mod dfa;
 pub mod nfa;
+pub mod occlusion;
 pub mod packed;
 #[cfg(test)]
 mod tests;
@@ -297,6 +298,10 @@ mod testoibits {
         assert_all::<MatchKind>();
         assert_all::<Span>();
         assert_all::<StartKind>();
+
+        assert_all::<occlusion::Occlusion>();
+        assert_all::<occlusion::OcclusionError>();
+        assert_all::<occlusion::OcclusionKind>();
     }
 
     #[test]
