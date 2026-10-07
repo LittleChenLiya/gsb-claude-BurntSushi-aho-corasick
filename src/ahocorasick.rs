@@ -13,7 +13,9 @@ use crate::{
         error::{BuildError, MatchError},
         prefilter::Prefilter,
         primitives::{PatternID, StateID},
-        search::{Anchored, Input, Match, MatchKind, StartKind},
+        search::{
+            Anchored, EmptyPatterns, Input, Match, MatchKind, StartKind,
+        },
     },
 };
 
@@ -2437,6 +2439,66 @@ impl AhoCorasickBuilder {
     pub fn start_kind(&mut self, kind: StartKind) -> &mut AhoCorasickBuilder {
         self.dfa.start_kind(kind);
         self.start_kind = kind;
+        self
+    }
+
+    /// Configure whether empty patterns are admitted or rejected when
+    /// building an automaton.
+    ///
+    /// An empty pattern is a pattern with a byte length of `0`. By default,
+    /// empty patterns are admitted (that is,
+    /// [`EmptyPatterns::Allow`]). When admitted, an empty pattern matches at
+    /// every position, and it keeps the [`PatternID`] implied by its position
+    /// in the sequence of patterns. In particular, pattern IDs are never
+    /// silently renumbered.
+    ///
+    /// When [`EmptyPatterns::Reject`] is set and one or more of the patterns
+    /// given are empty, construction fails with a [`BuildError`]. The error
+    /// reports the original (zero-based) indices of *every* empty pattern via
+    /// [`BuildError::empty_pattern_indices`]. Those indices are exactly the
+    /// pattern IDs that the empty patterns would have been assigned if they had
+    /// been admitted.
+    ///
+    /// This only controls whether construction accepts empty patterns. The
+    /// legality of using an automaton that can match the empty string with any
+    /// particular search operation continues to be enforced by the search
+    /// APIs. For example,
+    /// [`AhoCorasick::stream_find_iter`](AhoCorasick::stream_find_iter) still
+    /// returns a [`MatchError`] for such automatons.
+    ///
+    /// # Examples
+    ///
+    /// Empty patterns are admitted by default and keep their pattern IDs:
+    ///
+    /// ```
+    /// use aho_corasick::{AhoCorasick, PatternID};
+    ///
+    /// let ac = AhoCorasick::builder()
+    ///     .build(&["", "foo", ""])
+    ///     .unwrap();
+    /// assert_eq!(3, ac.patterns_len());
+    /// assert_eq!(Some(PatternID::must(0)), ac.find("foo").map(|m| m.pattern()));
+    /// ```
+    ///
+    /// Empty patterns can be rejected, with the original indices of every
+    /// empty pattern reported by the build error:
+    ///
+    /// ```
+    /// use aho_corasick::{AhoCorasickBuilder, EmptyPatterns};
+    ///
+    /// let err = AhoCorasickBuilder::new()
+    ///     .empty_patterns(EmptyPatterns::Reject)
+    ///     .build(&["", "foo", ""])
+    ///     .unwrap_err();
+    /// assert_eq!(Some(&[0, 2][..]), err.empty_pattern_indices());
+    /// ```
+    pub fn empty_patterns(
+        &mut self,
+        empty_patterns: EmptyPatterns,
+    ) -> &mut AhoCorasickBuilder {
+        self.nfa_noncontiguous.empty_patterns(empty_patterns);
+        self.nfa_contiguous.empty_patterns(empty_patterns);
+        self.dfa.empty_patterns(empty_patterns);
         self
     }
 

@@ -46,6 +46,17 @@ enum ErrorKind {
         /// The length that was too long.
         len: usize,
     },
+    /// Occurs when building an automaton is configured to reject empty
+    /// patterns and one or more of the patterns given are empty.
+    ///
+    /// The indices correspond to the original (zero-based) positions of the
+    /// empty patterns in the sequence of patterns given to the builder. They
+    /// are also precisely the pattern IDs that the empty patterns would have
+    /// had if they had been admitted.
+    EmptyPatterns {
+        /// The original indices of every empty pattern.
+        patterns: alloc::vec::Vec<usize>,
+    },
 }
 
 impl BuildError {
@@ -70,6 +81,26 @@ impl BuildError {
         len: usize,
     ) -> BuildError {
         BuildError { kind: ErrorKind::PatternTooLong { pattern, len } }
+    }
+
+    pub(crate) fn empty_patterns(
+        patterns: alloc::vec::Vec<usize>,
+    ) -> BuildError {
+        BuildError { kind: ErrorKind::EmptyPatterns { patterns } }
+    }
+
+    /// If this error was caused by a build configured to reject empty
+    /// patterns, then this returns the original indices of every empty
+    /// pattern. Otherwise this returns `None`.
+    ///
+    /// The indices returned are zero-based positions in the sequence of
+    /// patterns given to the builder. They correspond to the pattern IDs that
+    /// the empty patterns would have had if they had been admitted.
+    pub fn empty_pattern_indices(&self) -> Option<&[usize]> {
+        match self.kind {
+            ErrorKind::EmptyPatterns { ref patterns } => Some(patterns),
+            _ => None,
+        }
     }
 }
 
@@ -103,6 +134,15 @@ impl core::fmt::Display for BuildError {
                     pattern.as_usize(),
                     len,
                     SmallIndex::MAX.as_usize(),
+                )
+            }
+            ErrorKind::EmptyPatterns { ref patterns } => {
+                write!(
+                    f,
+                    "found {} empty pattern(s) at indices {:?}, but the \
+                     builder was configured to reject empty patterns",
+                    patterns.len(),
+                    patterns,
                 )
             }
         }

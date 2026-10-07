@@ -246,7 +246,9 @@ pub use crate::{
     util::{
         error::{BuildError, MatchError, MatchErrorKind},
         primitives::{PatternID, PatternIDError},
-        search::{Anchored, Input, Match, MatchKind, Span, StartKind},
+        search::{
+            Anchored, EmptyPatterns, Input, Match, MatchKind, Span, StartKind,
+        },
     },
 };
 

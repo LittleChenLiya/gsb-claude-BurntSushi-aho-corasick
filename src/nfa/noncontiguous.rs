@@ -21,7 +21,7 @@ use crate::{
         prefilter::{self, opposite_ascii_case, Prefilter},
         primitives::{IteratorIndexExt, PatternID, SmallIndex, StateID},
         remapper::Remapper,
-        search::{Anchored, MatchKind},
+        search::{Anchored, EmptyPatterns, MatchKind},
         special::Special,
     },
 };
@@ -844,6 +844,7 @@ pub struct Builder {
     prefilter: bool,
     ascii_case_insensitive: bool,
     dense_depth: usize,
+    empty_patterns: EmptyPatterns,
 }
 
 impl Default for Builder {
@@ -853,6 +854,7 @@ impl Default for Builder {
             prefilter: true,
             ascii_case_insensitive: false,
             dense_depth: 3,
+            empty_patterns: EmptyPatterns::Allow,
         }
     }
 }
@@ -920,6 +922,19 @@ impl Builder {
     /// for more documentation and examples.
     pub fn prefilter(&mut self, yes: bool) -> &mut Builder {
         self.prefilter = yes;
+        self
+    }
+
+    /// Set the policy for admitting empty patterns.
+    ///
+    /// See
+    /// [`AhoCorasickBuilder::empty_patterns`](crate::AhoCorasickBuilder::empty_patterns)
+    /// for more documentation and examples.
+    pub fn empty_patterns(
+        &mut self,
+        empty_patterns: EmptyPatterns,
+    ) -> &mut Builder {
+        self.empty_patterns = empty_patterns;
         self
     }
 }
@@ -1059,6 +1074,19 @@ impl<'a> Compiler<'a> {
         I: IntoIterator<Item = P>,
         P: AsRef<[u8]>,
     {
+        // Whether empty patterns must be rejected. When this is enabled and
+        // one or more empty patterns are present, construction fails below and
+        // reports the original indices of *every* empty pattern. This is a
+        // pre-build check: once an empty pattern has been seen, we stop
+        // constructing trie states and only scan the remaining patterns for
+        // additional empty indices (the partially built automaton is
+        // discarded when the error is returned). When empty patterns are
+        // admitted, they fall through the normal construction path below and
+        // keep the pattern ID implied by their position; pattern IDs are
+        // never silently renumbered.
+        let reject_empty =
+            matches!(self.builder.empty_patterns, EmptyPatterns::Reject);
+        let mut empty_pat_indices: Vec<usize> = vec![];
         'PATTERNS: for (i, pat) in patterns.into_iter().enumerate() {
             let pid = PatternID::new(i).map_err(|e| {
                 BuildError::pattern_id_overflow(
@@ -1067,6 +1095,14 @@ impl<'a> Compiler<'a> {
                 )
             })?;
             let pat = pat.as_ref();
+            if reject_empty {
+                if pat.is_empty() {
+                    empty_pat_indices.push(i);
+                }
+                if !empty_pat_indices.is_empty() {
+                    continue 'PATTERNS;
+                }
+            }
             let patlen = SmallIndex::new(pat.len())
                 .map_err(|_| BuildError::pattern_too_long(pid, pat.len()))?;
             self.nfa.min_pattern_len =
@@ -1145,6 +1181,9 @@ impl<'a> Compiler<'a> {
             // Once the pattern has been added, log the match in the final
             // state that it reached.
             self.nfa.add_match(prev, pid)?;
+        }
+        if !empty_pat_indices.is_empty() {
+            return Err(BuildError::empty_patterns(empty_pat_indices));
         }
         Ok(())
     }

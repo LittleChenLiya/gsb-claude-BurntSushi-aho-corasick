@@ -18,7 +18,7 @@ use crate::{
         int::{Usize, U32},
         prefilter::Prefilter,
         primitives::{IteratorIndexExt, PatternID, SmallIndex, StateID},
-        search::{Anchored, MatchKind, StartKind},
+        search::{Anchored, EmptyPatterns, MatchKind, StartKind},
         special::Special,
     },
 };
@@ -759,6 +759,22 @@ impl Builder {
     /// for more documentation and examples.
     pub fn prefilter(&mut self, yes: bool) -> &mut Builder {
         self.noncontiguous.prefilter(yes);
+        self
+    }
+
+    /// Set the policy for admitting empty patterns.
+    ///
+    /// This only applies when using [`Builder::build`] and not
+    /// [`Builder::build_from_noncontiguous`].
+    ///
+    /// See
+    /// [`AhoCorasickBuilder::empty_patterns`](crate::AhoCorasickBuilder::empty_patterns)
+    /// for more documentation and examples.
+    pub fn empty_patterns(
+        &mut self,
+        empty_patterns: EmptyPatterns,
+    ) -> &mut Builder {
+        self.noncontiguous.empty_patterns(empty_patterns);
         self
     }
 

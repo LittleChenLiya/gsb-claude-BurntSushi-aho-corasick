@@ -1,8 +1,8 @@
 use std::{collections::HashMap, format, string::String, vec::Vec};
 
 use crate::{
-    AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, Anchored, Input, Match,
-    MatchKind, StartKind,
+    AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, Anchored, EmptyPatterns,
+    Input, Match, MatchErrorKind, MatchKind, StartKind,
 };
 
 /// A description of a single test against an Aho-Corasick automaton.
@@ -1661,4 +1661,201 @@ fn regression_stream_rare_byte_prefilter() {
     }
 
     run().unwrap()
+}
+
+// Tests for the pre-build empty pattern admission policy.
+//
+// Empty patterns are admitted by default and keep the pattern ID implied by
+// their position. When configured to reject empty patterns, construction
+// fails and the error reports the original indices of *every* empty pattern.
+// Neither policy silently renumbers pattern IDs.
+mod empty_pattern_policy {
+    use std::vec;
+
+    use super::*;
+    use crate::{automaton::Automaton, nfa, PatternID};
+
+    /// The acceptance set: an empty pattern at the head and at the tail with
+    /// a normal word sandwiched between them.
+    const PATTERNS: &[&str] = &["", "foo", ""];
+
+    #[test]
+    fn reject_reports_all_original_indices_for_every_kind() {
+        for kind in [
+            None,
+            Some(AhoCorasickKind::NoncontiguousNFA),
+            Some(AhoCorasickKind::ContiguousNFA),
+            Some(AhoCorasickKind::DFA),
+        ] {
+            let err = AhoCorasick::builder()
+                .kind(kind)
+                .empty_patterns(EmptyPatterns::Reject)
+                .build(PATTERNS)
+                .unwrap_err();
+            assert_eq!(
+                Some(&[0, 2][..]),
+                err.empty_pattern_indices(),
+                "kind={:?}",
+                kind,
+            );
+        }
+    }
+
+    #[test]
+    fn reject_reports_indices_without_depending_on_match_kind() {
+        // The empty pattern check is independent of match semantics: the
+        // same original indices are reported under every match kind.
+        for match_kind in [
+            MatchKind::Standard,
+            MatchKind::LeftmostFirst,
+            MatchKind::LeftmostLongest,
+        ] {
+            let err = AhoCorasickBuilder::new()
+                .match_kind(match_kind)
+                .empty_patterns(EmptyPatterns::Reject)
+                .build(&["", "", "a", ""])
+                .unwrap_err();
+            assert_eq!(
+                Some(&[0, 1, 3][..]),
+                err.empty_pattern_indices(),
+                "match_kind={:?}",
+                match_kind,
+            );
+        }
+    }
+
+    #[test]
+    fn reject_without_empty_patterns_builds_normally() {
+        let ac = AhoCorasickBuilder::new()
+            .empty_patterns(EmptyPatterns::Reject)
+            .build(&["foo", "bar"])
+            .unwrap();
+        assert_eq!(2, ac.patterns_len());
+        assert!(ac.is_match("foo bar"));
+    }
+
+    #[test]
+    fn allow_is_the_default_and_preserves_pattern_ids() {
+        for configured in [None, Some(EmptyPatterns::Allow)] {
+            let mut builder = AhoCorasick::builder();
+            if let Some(policy) = configured {
+                builder.empty_patterns(policy);
+            }
+            let ac = builder.build(PATTERNS).unwrap();
+
+            // Nothing was dropped: all three patterns retain their original
+            // positions as pattern IDs.
+            assert_eq!(3, ac.patterns_len());
+
+            // Both empty patterns (IDs 0 and 2) match at every position,
+            // while the sandwiched normal word retains ID 1. We compare the
+            // set of distinct (pid, start, end) triples since the overlapping
+            // iterator may emit empty matches more than once at a position.
+            let mut overlapping: Vec<_> = ac
+                .find_overlapping_iter("foo")
+                .map(|m| (m.pattern(), m.start(), m.end()))
+                .collect();
+            overlapping.sort();
+            overlapping.dedup();
+            assert_eq!(
+                vec![
+                    (PatternID::must(0), 0, 0),
+                    (PatternID::must(0), 1, 1),
+                    (PatternID::must(0), 2, 2),
+                    (PatternID::must(0), 3, 3),
+                    (PatternID::must(1), 0, 3),
+                    (PatternID::must(2), 0, 0),
+                    (PatternID::must(2), 1, 1),
+                    (PatternID::must(2), 2, 2),
+                    (PatternID::must(2), 3, 3),
+                ],
+                overlapping,
+                "policy={:?}",
+                configured,
+            );
+        }
+    }
+
+    #[test]
+    fn allow_keeps_normal_word_id_under_leftmost_longest() {
+        // Under leftmost-longest semantics, the non-empty pattern still owns
+        // its original ID and wins on its own span.
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(PATTERNS)
+            .unwrap();
+        let matches: Vec<_> = ac
+            .find_iter("x foo x")
+            .map(|m| (m.pattern(), m.start(), m.end()))
+            .collect();
+        assert_eq!(
+            vec![
+                (PatternID::must(0), 0, 0),
+                (PatternID::must(0), 1, 1),
+                (PatternID::must(1), 2, 5),
+                (PatternID::must(0), 6, 6),
+                (PatternID::must(0), 7, 7),
+            ],
+            matches,
+        );
+    }
+
+    // The empty pattern policy is plumbed through each low-level builder; they
+    // all construct their automata via the noncontiguous NFA builder.
+    #[test]
+    fn low_level_builders_reject_empty_patterns() {
+        let err = nfa::noncontiguous::Builder::new()
+            .empty_patterns(EmptyPatterns::Reject)
+            .build(PATTERNS)
+            .unwrap_err();
+        assert_eq!(Some(&[0, 2][..]), err.empty_pattern_indices());
+
+        let err = nfa::contiguous::Builder::new()
+            .empty_patterns(EmptyPatterns::Reject)
+            .build(PATTERNS)
+            .unwrap_err();
+        assert_eq!(Some(&[0, 2][..]), err.empty_pattern_indices());
+
+        let err = crate::dfa::Builder::new()
+            .empty_patterns(EmptyPatterns::Reject)
+            .build(PATTERNS)
+            .unwrap_err();
+        assert_eq!(Some(&[0, 2][..]), err.empty_pattern_indices());
+    }
+
+    #[test]
+    fn low_level_builders_allow_empty_patterns_by_default() {
+        let nfa = nfa::noncontiguous::Builder::new().build(PATTERNS).unwrap();
+        assert_eq!(3, nfa.patterns_len());
+        assert_eq!(0, nfa.min_pattern_len());
+    }
+
+    // Legality of particular match strategies continues to be enforced by the
+    // existing search-time checks; the build-time policy does not change them.
+    #[cfg(feature = "std")]
+    #[test]
+    fn original_match_strategy_errors_remain_after_allow() {
+        // Standard semantics with admitted empty patterns: stream searching
+        // still reports the pre-existing "unsupported empty pattern" error.
+        let ac = AhoCorasickBuilder::new().build(PATTERNS).unwrap();
+        let reader = std::io::Cursor::new(b"foo".to_vec());
+        let err = ac.try_stream_find_iter(reader).unwrap_err();
+        assert_eq!(&MatchErrorKind::UnsupportedEmpty, err.kind());
+
+        // The existing leftmost stream restriction is likewise untouched,
+        // even when no empty pattern is involved.
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostFirst)
+            .empty_patterns(EmptyPatterns::Reject)
+            .build(&["foo"])
+            .unwrap();
+        let reader = std::io::Cursor::new(b"foo".to_vec());
+        let err = ac.try_stream_find_iter(reader).unwrap_err();
+        assert_eq!(
+            &MatchErrorKind::UnsupportedStream {
+                got: MatchKind::LeftmostFirst
+            },
+            err.kind(),
+        );
+    }
 }

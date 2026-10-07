@@ -1156,3 +1156,42 @@ impl Default for StartKind {
         StartKind::Unanchored
     }
 }
+
+/// A policy for whether empty patterns are admitted when building an
+/// Aho-Corasick automaton.
+///
+/// An empty pattern is a pattern whose byte length is `0`. When empty
+/// patterns are admitted, they are kept and their position in the sequence of
+/// patterns determines its [`PatternID`](crate::PatternID), just like any
+/// other pattern. That is, admitting empty patterns never results in pattern
+/// IDs being silently renumbered.
+///
+/// Note that this only controls whether construction accepts empty patterns.
+/// Whether any particular *search* operation supports automata that can match
+/// the empty string is a separate concern that continues to be enforced by
+/// the search APIs. For example, stream searching still rejects an automaton
+/// containing an empty pattern at search time.
+///
+/// By default, empty patterns are admitted.
+///
+/// This is principally used as an input to the
+/// [`AhoCorasickBuilder::empty_patterns`](crate::AhoCorasickBuilder::empty_patterns)
+/// method.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmptyPatterns {
+    /// Admit empty patterns and preserve their pattern IDs.
+    ///
+    /// This is the default.
+    Allow,
+    /// Reject empty patterns.
+    ///
+    /// When one or more empty patterns are given, construction fails and the
+    /// build error reports the original indices of *every* empty pattern.
+    Reject,
+}
+
+impl Default for EmptyPatterns {
+    fn default() -> EmptyPatterns {
+        EmptyPatterns::Allow
+    }
+}
