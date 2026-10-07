@@ -1,8 +1,10 @@
-use std::{collections::HashMap, format, string::String, vec::Vec};
+use std::{
+    collections::HashMap, format, string::String, string::ToString, vec::Vec,
+};
 
 use crate::{
-    AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, Anchored, Input, Match,
-    MatchKind, StartKind,
+    AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, Anchored, EmptyPatterns,
+    Input, Match, MatchErrorKind, MatchKind, StartKind,
 };
 
 /// A description of a single test against an Aho-Corasick automaton.
@@ -1508,6 +1510,97 @@ fn unanchored_not_allowed_even_if_technically_available() {
         .build(&["foo"])
         .unwrap();
     assert!(ac.try_find(Input::new("foo").anchored(Anchored::No)).is_err());
+}
+
+// This tests that when empty patterns are rejected by the builder, the
+// error reports the original indices of *all* empty patterns. Here, empty
+// patterns sit at the first and last positions of the pattern set, with a
+// normal pattern sandwiched in between.
+#[test]
+fn empty_patterns_denied_reports_original_indices() {
+    let result = AhoCorasick::builder()
+        .empty_patterns(EmptyPatterns::Deny)
+        .build(["", "foo", ""]);
+    let err = result.unwrap_err();
+    assert_eq!(Some(&[0, 2][..]), err.empty_pattern_indices());
+    // The Display representation should mention the indices too.
+    let msg = err.to_string();
+    assert!(
+        msg.contains('0') && msg.contains('2'),
+        "unexpected error message: {}",
+        msg,
+    );
+
+    // When there are no empty patterns, denying them changes nothing.
+    let ac = AhoCorasick::builder()
+        .empty_patterns(EmptyPatterns::Deny)
+        .build(["foo", "bar"])
+        .unwrap();
+    assert_eq!(2, ac.patterns_len());
+}
+
+// This tests that when empty patterns are allowed (both explicitly and by
+// default), their pattern IDs are preserved. That is, empty patterns are
+// never silently dropped: the ID of every pattern still corresponds to its
+// original index in the pattern set.
+#[test]
+fn empty_patterns_allowed_preserves_pattern_ids() {
+    let ac = AhoCorasick::builder()
+        .empty_patterns(EmptyPatterns::Allow)
+        .build(["", "foo", ""])
+        .unwrap();
+    assert_eq!(3, ac.patterns_len());
+    assert_eq!(0, ac.min_pattern_len());
+    assert_eq!(3, ac.max_pattern_len());
+
+    // An overlapping search reports every pattern that matches at each
+    // position, including both empty patterns with their original IDs (0
+    // and 2) and the normal pattern with ID 1.
+    let matches: Vec<(usize, usize, usize)> = ac
+        .find_overlapping_iter("foo")
+        .map(|m| (m.pattern().as_usize(), m.start(), m.end()))
+        .collect();
+    assert!(matches.contains(&(0, 0, 0)), "matches: {:?}", matches);
+    assert!(matches.contains(&(2, 0, 0)), "matches: {:?}", matches);
+    assert!(matches.contains(&(1, 0, 3)), "matches: {:?}", matches);
+
+    // The default policy is to allow empty patterns, preserving the crate's
+    // historical behavior: an empty pattern matches at every position.
+    let ac = AhoCorasick::new(["", "foo", ""]).unwrap();
+    assert_eq!(3, ac.patterns_len());
+    let m = ac.find("foo").unwrap();
+    assert_eq!(0, m.pattern().as_usize());
+    assert_eq!(0, m.start());
+    assert_eq!(0, m.end());
+}
+
+// This tests that allowing empty patterns does not change which search
+// operations are legal. The existing match-strategy checks are untouched:
+// stream searches still refuse automatons containing empty patterns, and
+// leftmost semantics still refuse overlapping searches.
+#[test]
+fn empty_patterns_allowed_keeps_match_strategy_errors() {
+    // Stream searches still refuse automatons with empty patterns.
+    #[cfg(feature = "std")]
+    {
+        let ac = AhoCorasick::new(["", "foo", ""]).unwrap();
+        let err = ac.try_stream_find_iter(&b"foo"[..]).err().unwrap();
+        assert_eq!(&MatchErrorKind::UnsupportedEmpty, err.kind());
+    }
+
+    // Leftmost semantics still refuse overlapping searches, even when the
+    // automaton contains (allowed) empty patterns.
+    let ac = AhoCorasick::builder()
+        .match_kind(MatchKind::LeftmostFirst)
+        .build(["", "foo", ""])
+        .unwrap();
+    let err = ac.try_find_overlapping_iter("foo").err().unwrap();
+    assert_eq!(
+        &MatchErrorKind::UnsupportedOverlapping {
+            got: MatchKind::LeftmostFirst
+        },
+        err.kind(),
+    );
 }
 
 // This tests that a prefilter does not cause a search to report a match

@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::util::{
     primitives::{PatternID, SmallIndex},
     search::MatchKind,
@@ -46,6 +48,14 @@ enum ErrorKind {
         /// The length that was too long.
         len: usize,
     },
+    /// Occurs when one or more empty patterns are given to the Aho-Corasick
+    /// constructor, but the builder was configured to reject empty patterns.
+    EmptyPatterns {
+        /// The indices of the empty patterns, in ascending order. Each index
+        /// corresponds to the position of the empty pattern in the original
+        /// iterator of patterns provided by the caller.
+        indices: Vec<usize>,
+    },
 }
 
 impl BuildError {
@@ -70,6 +80,26 @@ impl BuildError {
         len: usize,
     ) -> BuildError {
         BuildError { kind: ErrorKind::PatternTooLong { pattern, len } }
+    }
+
+    pub(crate) fn empty_patterns(indices: Vec<usize>) -> BuildError {
+        BuildError { kind: ErrorKind::EmptyPatterns { indices } }
+    }
+
+    /// Returns the original indices of the empty patterns that caused this
+    /// error, if this error was indeed caused by one or more empty patterns
+    /// rejected by the builder.
+    ///
+    /// Each index corresponds to the position of an empty pattern in the
+    /// original iterator of patterns provided by the caller. The indices are
+    /// in ascending order.
+    ///
+    /// This returns `None` when this error has any other cause.
+    pub fn empty_pattern_indices(&self) -> Option<&[usize]> {
+        match self.kind {
+            ErrorKind::EmptyPatterns { ref indices } => Some(indices),
+            _ => None,
+        }
     }
 }
 
@@ -103,6 +133,14 @@ impl core::fmt::Display for BuildError {
                     pattern.as_usize(),
                     len,
                     SmallIndex::MAX.as_usize(),
+                )
+            }
+            ErrorKind::EmptyPatterns { ref indices } => {
+                write!(
+                    f,
+                    "empty patterns are not allowed, but empty patterns \
+                     were found at indices: {:?}",
+                    indices,
                 )
             }
         }

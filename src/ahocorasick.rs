@@ -2138,6 +2138,7 @@ pub struct AhoCorasickBuilder {
     dfa: dfa::Builder,
     kind: Option<AhoCorasickKind>,
     start_kind: StartKind,
+    empty_patterns: EmptyPatterns,
 }
 
 impl AhoCorasickBuilder {
@@ -2169,6 +2170,41 @@ impl AhoCorasickBuilder {
     /// );
     /// ```
     pub fn build<I, P>(&self, patterns: I) -> Result<AhoCorasick, BuildError>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
+    {
+        if let EmptyPatterns::Deny = self.empty_patterns {
+            // We need to look at every pattern before building anything, so
+            // collect them first. Empty patterns are never silently dropped:
+            // either construction fails and reports all of their original
+            // indices, or every pattern keeps the ID corresponding to its
+            // original position.
+            let patterns = patterns.into_iter().collect::<Vec<P>>();
+            let indices =
+                patterns
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, p)| {
+                        if p.as_ref().is_empty() {
+                            Some(i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<usize>>();
+            if !indices.is_empty() {
+                return Err(BuildError::empty_patterns(indices));
+            }
+            return self.build_inner(patterns);
+        }
+        self.build_inner(patterns)
+    }
+
+    /// Build an Aho-Corasick automaton without checking for empty patterns.
+    /// Callers are responsible for applying the configured empty pattern
+    /// policy before calling this routine.
+    fn build_inner<I, P>(&self, patterns: I) -> Result<AhoCorasick, BuildError>
     where
         I: IntoIterator<Item = P>,
         P: AsRef<[u8]>,
@@ -2440,6 +2476,57 @@ impl AhoCorasickBuilder {
         self
     }
 
+    /// Set the policy for handling empty patterns.
+    ///
+    /// When [`EmptyPatterns::Allow`] is used (which is the default), empty
+    /// patterns are permitted and participate in searches like any other
+    /// pattern. When [`EmptyPatterns::Deny`] is used, building an automaton
+    /// fails with an error if at least one empty pattern is given. The error
+    /// reports the original indices of _all_ empty patterns (see
+    /// [`BuildError::empty_pattern_indices`]).
+    ///
+    /// Note that regardless of this setting, empty patterns are never
+    /// silently dropped: the [`PatternID`] of a pattern always corresponds
+    /// to its original index in the iterator of patterns provided by the
+    /// caller.
+    ///
+    /// This setting does not change which search operations are legal. For
+    /// example, some search routines still refuse to run on an automaton
+    /// containing an empty pattern (see [`MatchErrorKind::UnsupportedEmpty`]),
+    /// and the checks for [`MatchKind`] and [`StartKind`] are unaffected.
+    ///
+    /// [`MatchErrorKind::UnsupportedEmpty`]: crate::MatchErrorKind::UnsupportedEmpty
+    ///
+    /// # Examples
+    ///
+    /// Reject empty patterns and inspect their original indices:
+    ///
+    /// ```
+    /// use aho_corasick::{AhoCorasick, EmptyPatterns};
+    ///
+    /// let result = AhoCorasick::builder()
+    ///     .empty_patterns(EmptyPatterns::Deny)
+    ///     .build(["", "foo", ""]);
+    /// let err = result.unwrap_err();
+    /// assert_eq!(Some(&[0, 2][..]), err.empty_pattern_indices());
+    /// ```
+    ///
+    /// The default is to allow empty patterns, preserving their pattern IDs:
+    ///
+    /// ```
+    /// use aho_corasick::AhoCorasick;
+    ///
+    /// let ac = AhoCorasick::new(["", "foo", ""]).unwrap();
+    /// assert_eq!(3, ac.patterns_len());
+    /// ```
+    pub fn empty_patterns(
+        &mut self,
+        policy: EmptyPatterns,
+    ) -> &mut AhoCorasickBuilder {
+        self.empty_patterns = policy;
+        self
+    }
+
     /// Enable ASCII-aware case insensitive matching.
     ///
     /// When this option is enabled, searching will be performed without
@@ -2631,6 +2718,36 @@ pub enum AhoCorasickKind {
     ContiguousNFA,
     /// Use a DFA. Warning: DFAs typically use a large amount of memory.
     DFA,
+}
+
+/// A policy for how to handle empty patterns when building an [`AhoCorasick`]
+/// searcher.
+///
+/// This is principally used as an input to the
+/// [`AhoCorasickBuilder::empty_patterns`] method. Its documentation goes into
+/// more detail about each choice.
+///
+/// The default is [`EmptyPatterns::Allow`], which corresponds to the
+/// historical behavior of this crate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmptyPatterns {
+    /// Permit empty patterns. An empty pattern participates in searches like
+    /// any other pattern, and every pattern keeps the [`PatternID`]
+    /// corresponding to its original index in the iterator of patterns
+    /// provided by the caller. This is the default.
+    Allow,
+    /// Reject empty patterns. When at least one empty pattern is given to
+    /// [`AhoCorasickBuilder::build`], construction fails with an error that
+    /// reports the original indices of all empty patterns. (See
+    /// [`BuildError::empty_pattern_indices`].) Empty patterns are never
+    /// silently dropped from the automaton.
+    Deny,
+}
+
+impl Default for EmptyPatterns {
+    fn default() -> EmptyPatterns {
+        EmptyPatterns::Allow
+    }
 }
 
 /// A trait that effectively gives us practical dynamic dispatch over anything

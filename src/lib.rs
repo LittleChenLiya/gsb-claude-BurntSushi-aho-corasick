@@ -240,8 +240,8 @@ doc_comment::doctest!("../README.md");
 pub use crate::ahocorasick::StreamFindIter;
 pub use crate::{
     ahocorasick::{
-        AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, FindIter,
-        FindOverlappingIter,
+        AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, EmptyPatterns,
+        FindIter, FindOverlappingIter,
     },
     util::{
         error::{BuildError, MatchError, MatchErrorKind},
