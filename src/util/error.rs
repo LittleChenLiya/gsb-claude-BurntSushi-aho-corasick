@@ -257,3 +257,126 @@ impl core::fmt::Display for MatchError {
         }
     }
 }
+
+/// An error that occurred while replacing raw byte matches in a haystack.
+///
+/// This error is returned by replacement routines that splice caller
+/// supplied matches (e.g., from an overlapping search) into a byte
+/// haystack, such as
+/// [`AhoCorasick::try_replace_all_bytes_with_matches`](crate::AhoCorasick::try_replace_all_bytes_with_matches).
+/// Since the matches are provided by the caller, they are validated before
+/// any replacement occurs: matches must be in bounds and must not overlap.
+/// Overlapping matches are always reported as an error rather than being
+/// resolved by an arbitrary choice.
+///
+/// When the `std` feature is enabled, this implements the
+/// `std::error::Error` trait.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplaceError(alloc::boxed::Box<ReplaceErrorKind>);
+
+impl ReplaceError {
+    /// Create a new error value with the given kind.
+    ///
+    /// This is a more verbose version of the kind-specific constructors,
+    /// e.g., `ReplaceError::overlapping`.
+    pub fn new(kind: ReplaceErrorKind) -> ReplaceError {
+        ReplaceError(alloc::boxed::Box::new(kind))
+    }
+
+    /// Returns a reference to the underlying error kind.
+    pub fn kind(&self) -> &ReplaceErrorKind {
+        &self.0
+    }
+
+    /// Create a new "overlapping matches" error. This occurs when a match
+    /// starts before the end of the previous match, which makes splicing
+    /// replacements into the haystack ambiguous.
+    ///
+    /// `previous_end` is the end offset of the match that came before, and
+    /// `next_start` is the start offset of the offending match.
+    ///
+    /// This is the same as calling `ReplaceError::new` with a
+    /// [`ReplaceErrorKind::Overlapping`] kind.
+    pub fn overlapping(
+        previous_end: usize,
+        next_start: usize,
+    ) -> ReplaceError {
+        ReplaceError::new(ReplaceErrorKind::Overlapping {
+            previous_end,
+            next_start,
+        })
+    }
+
+    /// Create a new "match out of bounds" error. This occurs when a match
+    /// refers to offsets outside of the haystack being searched.
+    ///
+    /// This is the same as calling `ReplaceError::new` with a
+    /// [`ReplaceErrorKind::OutOfBounds`] kind.
+    pub fn out_of_bounds(
+        start: usize,
+        end: usize,
+        haystack_len: usize,
+    ) -> ReplaceError {
+        ReplaceError::new(ReplaceErrorKind::OutOfBounds {
+            start,
+            end,
+            haystack_len,
+        })
+    }
+}
+
+/// The underlying kind of a [`ReplaceError`].
+///
+/// This is a **non-exhaustive** enum. That means new variants may be added
+/// in a semver-compatible release.
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReplaceErrorKind {
+    /// An error indicating that two matches overlap. Replacement of raw
+    /// byte matches requires non-overlapping matches, since there is no
+    /// sensible way to splice two replacements into the same bytes without
+    /// making an arbitrary choice.
+    Overlapping {
+        /// The end offset of the match that came before.
+        previous_end: usize,
+        /// The start offset of the overlapping match.
+        next_start: usize,
+    },
+    /// An error indicating that a match refers to offsets outside of the
+    /// haystack.
+    OutOfBounds {
+        /// The start offset of the offending match.
+        start: usize,
+        /// The end offset of the offending match.
+        end: usize,
+        /// The length of the haystack.
+        haystack_len: usize,
+    },
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ReplaceError {}
+
+impl core::fmt::Display for ReplaceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match *self.kind() {
+            ReplaceErrorKind::Overlapping { previous_end, next_start } => {
+                write!(
+                    f,
+                    "overlapping matches cannot be replaced: a match \
+                     starting at offset {} begins before the previous \
+                     match ends at offset {}",
+                    next_start, previous_end,
+                )
+            }
+            ReplaceErrorKind::OutOfBounds { start, end, haystack_len } => {
+                write!(
+                    f,
+                    "match at {}..{} is out of bounds for haystack of \
+                     length {}",
+                    start, end, haystack_len,
+                )
+            }
+        }
+    }
+}

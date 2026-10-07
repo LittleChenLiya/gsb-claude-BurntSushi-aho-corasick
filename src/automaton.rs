@@ -9,7 +9,7 @@ permit walking the state transitions of an Aho-Corasick automaton manually.
 use alloc::{string::String, vec::Vec};
 
 use crate::util::{
-    error::MatchError,
+    error::{MatchError, ReplaceError},
     primitives::PatternID,
     search::{Anchored, Input, Match, MatchKind, Span},
 };
@@ -481,6 +481,54 @@ pub unsafe trait Automaton: private::Sealed {
             dst.extend(replace_with[mat.pattern()].as_ref());
             true
         })?;
+        Ok(dst)
+    }
+
+    /// Replaces the given raw byte matches in `haystack` with bytes from
+    /// `replace_with` depending on the pattern that matched. The
+    /// `replace_with` slice must have length equal to
+    /// `Automaton::patterns_len`.
+    ///
+    /// See
+    /// [`AhoCorasick::try_replace_all_bytes_with_matches`](crate::AhoCorasick::try_replace_all_bytes_with_matches)
+    /// for more documentation and examples.
+    fn try_replace_all_bytes_with_matches<B, I>(
+        &self,
+        haystack: &[u8],
+        matches: I,
+        replace_with: &[B],
+    ) -> Result<Vec<u8>, ReplaceError>
+    where
+        Self: Sized,
+        B: AsRef<[u8]>,
+        I: IntoIterator<Item = Match>,
+    {
+        assert_eq!(
+            replace_with.len(),
+            self.patterns_len(),
+            "replace_all requires a replacement for every pattern \
+             in the automaton"
+        );
+        let mut dst = Vec::with_capacity(haystack.len());
+        let mut last_end = 0;
+        for m in matches {
+            if m.start() < last_end {
+                return Err(ReplaceError::overlapping(last_end, m.start()));
+            }
+            if m.end() > haystack.len() {
+                return Err(ReplaceError::out_of_bounds(
+                    m.start(),
+                    m.end(),
+                    haystack.len(),
+                ));
+            }
+            // Bytes that didn't participate in any match are copied to the
+            // output verbatim.
+            dst.extend(&haystack[last_end..m.start()]);
+            dst.extend(replace_with[m.pattern()].as_ref());
+            last_end = m.end();
+        }
+        dst.extend(&haystack[last_end..]);
         Ok(dst)
     }
 

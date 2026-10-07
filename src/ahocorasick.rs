@@ -10,7 +10,7 @@ use crate::{
     dfa,
     nfa::{contiguous, noncontiguous},
     util::{
-        error::{BuildError, MatchError},
+        error::{BuildError, MatchError, ReplaceError},
         prefilter::Prefilter,
         primitives::{PatternID, StateID},
         search::{Anchored, Input, Match, MatchKind, StartKind},
@@ -700,6 +700,64 @@ impl AhoCorasick {
     {
         self.try_replace_all_bytes(haystack, replace_with)
             .expect("AhoCorasick::try_replace_all_bytes should not fail")
+    }
+
+    /// Replace the given raw byte matches with a corresponding value in the
+    /// `replace_with` slice given. Both the haystack and the replacements
+    /// may contain arbitrary bytes, including invalid UTF-8.
+    ///
+    /// Replacements are determined by the index of the matching pattern.
+    /// For example, if a match has pattern ID `2`, then it is replaced by
+    /// `replace_with[2]`.
+    ///
+    /// This is the infallible version of
+    /// [`AhoCorasick::try_replace_all_bytes_with_matches`].
+    ///
+    /// # Panics
+    ///
+    /// This panics when [`AhoCorasick::try_replace_all_bytes_with_matches`]
+    /// would return an error. That is, when any two of the given matches
+    /// overlap, or when a match is out of bounds of the haystack.
+    ///
+    /// This also panics when `replace_with.len()` does not equal
+    /// [`AhoCorasick::patterns_len`].
+    ///
+    /// # Example: basic usage
+    ///
+    /// ```
+    /// use aho_corasick::AhoCorasick;
+    ///
+    /// let patterns = &["ab", "cd"];
+    /// let haystack = b"\xffab\xcd";
+    ///
+    /// let ac = AhoCorasick::new(patterns).unwrap();
+    /// let matches: Vec<_> = ac.find_iter(haystack).collect();
+    /// let result = ac.replace_all_bytes_with_matches(
+    ///     haystack,
+    ///     matches,
+    ///     &[b"\x00".as_slice(), b"\xfe".as_slice()],
+    /// );
+    /// assert_eq!(b"\xff\x00\xcd".to_vec(), result);
+    /// ```
+    pub fn replace_all_bytes_with_matches<B, I>(
+        &self,
+        haystack: &[u8],
+        matches: I,
+        replace_with: &[B],
+    ) -> Vec<u8>
+    where
+        B: AsRef<[u8]>,
+        I: IntoIterator<Item = Match>,
+    {
+        self.try_replace_all_bytes_with_matches(
+            haystack,
+            matches,
+            replace_with,
+        )
+        .expect(
+            "AhoCorasick::try_replace_all_bytes_with_matches should not \
+                 fail",
+        )
     }
 
     /// Replace all matches using a closure called on each match.
@@ -1454,6 +1512,95 @@ impl AhoCorasick {
     {
         enforce_anchored_consistency(self.start_kind, Anchored::No)?;
         self.aut.try_replace_all_bytes(haystack, replace_with)
+    }
+
+    /// Replace the given raw byte matches with a corresponding value in the
+    /// `replace_with` slice given. Both the haystack and the replacements
+    /// may contain arbitrary bytes, including invalid UTF-8.
+    ///
+    /// Unlike [`AhoCorasick::try_replace_all_bytes`], this routine does not
+    /// run a search itself. Instead, it splices the caller supplied matches
+    /// (as raw byte spans, e.g., collected from
+    /// [`AhoCorasick::find_iter`] or [`AhoCorasick::find_overlapping_iter`])
+    /// into the haystack. The match semantics and priority of this searcher
+    /// are unaffected: whichever matches the caller provides are the ones
+    /// that get replaced.
+    ///
+    /// Replacements are determined by the index of the matching pattern.
+    /// For example, if a match has pattern ID `2`, then it is replaced by
+    /// `replace_with[2]`. Bytes that don't participate in any match are
+    /// copied to the output verbatim.
+    ///
+    /// This is the fallible version of
+    /// [`AhoCorasick::replace_all_bytes_with_matches`].
+    ///
+    /// # Panics
+    ///
+    /// This panics when `replace_with.len()` does not equal
+    /// [`AhoCorasick::patterns_len`].
+    ///
+    /// # Errors
+    ///
+    /// This returns an error when any two of the given matches overlap.
+    /// Overlapping matches are always rejected explicitly rather than being
+    /// resolved by an arbitrary choice, since there is no sensible way to
+    /// splice two replacements into the same bytes. An error is also
+    /// returned when a match is out of bounds of the haystack.
+    ///
+    /// # Example: basic usage with invalid UTF-8
+    ///
+    /// ```
+    /// use aho_corasick::{AhoCorasick, PatternID};
+    ///
+    /// let patterns = &["ab", "cd"];
+    /// let haystack = b"\xffab\xcd";
+    ///
+    /// let ac = AhoCorasick::new(patterns).unwrap();
+    /// let matches: Vec<_> = ac.find_iter(haystack).collect();
+    /// assert_eq!(PatternID::must(0), matches[0].pattern());
+    /// let result = ac.try_replace_all_bytes_with_matches(
+    ///     haystack,
+    ///     matches,
+    ///     &[b"\x00".as_slice(), b"\xfe".as_slice()],
+    /// )?;
+    /// assert_eq!(b"\xff\x00\xcd".to_vec(), result);
+    ///
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Example: overlapping matches are rejected
+    ///
+    /// ```
+    /// use aho_corasick::{AhoCorasick, ReplaceErrorKind};
+    ///
+    /// let patterns = &["ab", "bc"];
+    /// let haystack = b"abc";
+    ///
+    /// let ac = AhoCorasick::new(patterns).unwrap();
+    /// let matches: Vec<_> = ac.find_overlapping_iter(haystack).collect();
+    /// let err = ac
+    ///     .try_replace_all_bytes_with_matches(haystack, matches, &["x", "y"])
+    ///     .unwrap_err();
+    /// assert_eq!(
+    ///     ReplaceErrorKind::Overlapping { previous_end: 2, next_start: 1 },
+    ///     *err.kind(),
+    /// );
+    /// ```
+    pub fn try_replace_all_bytes_with_matches<B, I>(
+        &self,
+        haystack: &[u8],
+        matches: I,
+        replace_with: &[B],
+    ) -> Result<Vec<u8>, ReplaceError>
+    where
+        B: AsRef<[u8]>,
+        I: IntoIterator<Item = Match>,
+    {
+        self.aut.try_replace_all_bytes_with_matches(
+            haystack,
+            matches,
+            replace_with,
+        )
     }
 
     /// Replace all matches using a closure called on each match.

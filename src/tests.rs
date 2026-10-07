@@ -1662,3 +1662,153 @@ fn regression_stream_rare_byte_prefilter() {
 
     run().unwrap()
 }
+
+#[test]
+fn replace_bytes_with_matches_invalid_utf8() {
+    use crate::PatternID;
+
+    // A short haystack containing invalid UTF-8 bytes. Both the unmatched
+    // bytes and the replacement contain non-UTF-8 bytes.
+    let patterns = &["ab"];
+    let haystack = b"\xffab\xcd";
+    let ac = AhoCorasick::new(patterns).unwrap();
+
+    let matches: Vec<Match> = ac.find_iter(haystack).collect();
+    // The matcher's existing priority/pattern selection is unchanged.
+    assert_eq!(
+        alloc::vec![PatternID::must(0)],
+        matches.iter().map(|m| m.pattern()).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        alloc::vec![(1, 3)],
+        matches.iter().map(|m| (m.start(), m.end())).collect::<Vec<_>>()
+    );
+
+    let result = ac
+        .try_replace_all_bytes_with_matches(
+            haystack,
+            matches,
+            &[b"\x00\xfe".as_slice()],
+        )
+        .unwrap();
+    // Unmatched bytes are preserved verbatim; the match is replaced by
+    // bytes that are themselves invalid UTF-8.
+    assert_eq!(b"\xff\x00\xfe\xcd".to_vec(), result);
+}
+
+#[test]
+fn replace_bytes_with_matches_adjacent() {
+    use crate::PatternID;
+
+    // Two adjacent hits: the end of the first match is the start of the
+    // second. Adjacent (but not overlapping) matches must both be replaced.
+    let patterns = &["ab", "cd"];
+    let haystack = b"abcd";
+    let ac = AhoCorasick::builder()
+        .match_kind(MatchKind::LeftmostFirst)
+        .build(patterns)
+        .unwrap();
+
+    let matches: Vec<Match> = ac.find_iter(haystack).collect();
+    assert_eq!(
+        alloc::vec![(PatternID::must(0), 0, 2), (PatternID::must(1), 2, 4)],
+        matches
+            .iter()
+            .map(|m| (m.pattern(), m.start(), m.end()))
+            .collect::<Vec<_>>()
+    );
+
+    let result = ac
+        .try_replace_all_bytes_with_matches(haystack, matches, &["x", "y"])
+        .unwrap();
+    assert_eq!(b"xy".to_vec(), result);
+}
+
+#[test]
+fn replace_bytes_with_matches_overlapping_rejected() {
+    use crate::{ReplaceError, ReplaceErrorKind};
+
+    // Overlapping patterns: an overlapping search reports both "ab" and
+    // "bc" in "abc". Splicing both replacements is ambiguous, so it must
+    // be explicitly rejected instead of arbitrarily choosing one.
+    let patterns = &["ab", "bc"];
+    let haystack = b"abc";
+    let ac = AhoCorasick::new(patterns).unwrap();
+
+    let matches: Vec<Match> = ac.find_overlapping_iter(haystack).collect();
+    assert_eq!(2, matches.len());
+
+    let err = ac
+        .try_replace_all_bytes_with_matches(haystack, matches, &["x", "y"])
+        .unwrap_err();
+    assert_eq!(
+        ReplaceError::overlapping(2, 1),
+        err,
+        "expected overlap of match ending at 2 with match starting at 1"
+    );
+    assert_eq!(
+        &ReplaceErrorKind::Overlapping { previous_end: 2, next_start: 1 },
+        err.kind()
+    );
+}
+
+#[test]
+fn replace_bytes_with_matches_out_of_bounds_rejected() {
+    use crate::{PatternID, ReplaceErrorKind, Span};
+
+    let patterns = &["ab"];
+    let haystack = b"ab";
+    let ac = AhoCorasick::new(patterns).unwrap();
+
+    // A caller supplied match that runs past the end of the haystack.
+    let matches =
+        alloc::vec![Match::new(PatternID::must(0), Span::from(0..3))];
+    let err = ac
+        .try_replace_all_bytes_with_matches(haystack, matches, &["x"])
+        .unwrap_err();
+    assert_eq!(
+        &ReplaceErrorKind::OutOfBounds { start: 0, end: 3, haystack_len: 2 },
+        err.kind()
+    );
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn replace_bytes_with_matches_temp_dir_fixture() {
+    use std::{io::Write, path::Path};
+
+    // Demonstrate the replacement with a small temporary-folder fixture:
+    // the (invalid UTF-8) haystack is read from a file and the replaced
+    // bytes are written back out.
+    let dir = std::env::temp_dir()
+        .join(format!("aho-corasick-replace-fixture-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let input_path = dir.join("haystack.bin");
+    let output_path = dir.join("replaced.bin");
+    std::fs::File::create(&input_path)
+        .unwrap()
+        .write_all(b"\xffab\xcdab")
+        .unwrap();
+
+    let haystack = std::fs::read(&input_path).unwrap();
+    let ac = AhoCorasick::new(&["ab"]).unwrap();
+    let matches: Vec<Match> = ac.find_iter(&haystack).collect();
+    let replaced = ac
+        .try_replace_all_bytes_with_matches(
+            &haystack,
+            matches,
+            &[b"\x00".as_slice()],
+        )
+        .unwrap();
+    std::fs::File::create(&output_path).unwrap().write_all(&replaced).unwrap();
+
+    assert_eq!(b"\xffab\xcdab".to_vec(), std::fs::read(&input_path).unwrap());
+    assert_eq!(
+        b"\xff\x00\xcd\x00".to_vec(),
+        std::fs::read(&output_path).unwrap()
+    );
+    assert!(Path::new(&output_path).exists());
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
