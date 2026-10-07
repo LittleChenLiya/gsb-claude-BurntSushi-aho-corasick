@@ -8,5 +8,6 @@ pub(crate) mod int;
 pub(crate) mod prefilter;
 pub(crate) mod primitives;
 pub(crate) mod remapper;
+pub(crate) mod replace;
 pub(crate) mod search;
 pub(crate) mod special;

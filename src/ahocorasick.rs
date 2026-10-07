@@ -10,7 +10,7 @@ use crate::{
     dfa,
     nfa::{contiguous, noncontiguous},
     util::{
-        error::{BuildError, MatchError},
+        error::{BuildError, MatchError, ReplaceError},
         prefilter::Prefilter,
         primitives::{PatternID, StateID},
         search::{Anchored, Input, Match, MatchKind, StartKind},
@@ -1454,6 +1454,87 @@ impl AhoCorasick {
     {
         enforce_anchored_consistency(self.start_kind, Anchored::No)?;
         self.aut.try_replace_all_bytes(haystack, replace_with)
+    }
+
+    /// Replace the given raw byte matches in `haystack` with the
+    /// corresponding value in the `replace_with` slice, and return the
+    /// result.
+    ///
+    /// This is like [`AhoCorasick::try_replace_all_bytes`], except that the
+    /// matches to replace are supplied by the caller instead of being found
+    /// by running a search. This is useful when matches have been collected
+    /// separately (for example, from [`AhoCorasick::find_iter`], which
+    /// preserves this searcher's match semantics and pattern priorities) and
+    /// possibly filtered or transformed before replacing.
+    ///
+    /// Replacements are determined by the pattern ID of each match. For
+    /// example, if a match has a pattern ID of `2`, then it is replaced by
+    /// `replace_with[2]`.
+    ///
+    /// Bytes in `haystack` that are not covered by any match are copied to
+    /// the result unchanged. Both `haystack` and the replacement fragments
+    /// may contain arbitrary bytes, including invalid UTF-8.
+    ///
+    /// # Errors
+    ///
+    /// The matches given must be non-overlapping and sorted by their start
+    /// offset, which is precisely what the iterators on this searcher yield.
+    /// If two matches overlap, an error with the
+    /// [`ReplaceErrorKind::OverlappingMatches`](crate::ReplaceErrorKind)
+    /// kind is returned. Overlapping
+    /// matches are never resolved by arbitrarily choosing one of them.
+    ///
+    /// An error is also returned when a match has a pattern ID with no
+    /// corresponding replacement in `replace_with`
+    /// ([`ReplaceErrorKind::UnknownPatternID`](crate::ReplaceErrorKind)),
+    /// or when a match's span falls outside of `haystack`
+    /// ([`ReplaceErrorKind::SpanOutOfBounds`](crate::ReplaceErrorKind)).
+    ///
+    /// # Example: replacing matches with invalid UTF-8 bytes
+    ///
+    /// ```
+    /// use aho_corasick::AhoCorasick;
+    ///
+    /// let patterns = &[b"\xFF".as_ref(), b"abc".as_ref()];
+    /// let haystack = b"\x80abc\xFFabc";
+    ///
+    /// let ac = AhoCorasick::new(patterns).unwrap();
+    /// let matches: Vec<_> = ac.find_iter(haystack).collect();
+    /// let result = ac.try_replace_matches_bytes(
+    ///     haystack,
+    ///     &matches,
+    ///     &[b"\xFE".as_ref(), b"x".as_ref()],
+    /// )?;
+    /// assert_eq!(b"\x80x\xFEx".to_vec(), result);
+    ///
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Example: overlapping matches are rejected
+    ///
+    /// ```
+    /// use aho_corasick::{AhoCorasick, Match, ReplaceErrorKind};
+    ///
+    /// let ac = AhoCorasick::new(&["a", "b"]).unwrap();
+    /// let matches = &[Match::must(0, 0..2), Match::must(1, 1..3)];
+    /// let err = ac
+    ///     .try_replace_matches_bytes(b"abc", matches, &["x", "y"])
+    ///     .unwrap_err();
+    /// assert!(matches!(
+    ///     err.kind(),
+    ///     ReplaceErrorKind::OverlappingMatches { .. }
+    /// ));
+    /// ```
+    pub fn try_replace_matches_bytes<B>(
+        &self,
+        haystack: &[u8],
+        matches: &[Match],
+        replace_with: &[B],
+    ) -> Result<Vec<u8>, ReplaceError>
+    where
+        B: AsRef<[u8]>,
+    {
+        crate::util::replace::replace_bytes(haystack, matches, replace_with)
     }
 
     /// Replace all matches using a closure called on each match.

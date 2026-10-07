@@ -476,12 +476,17 @@ pub unsafe trait Automaton: private::Sealed {
             "replace_all requires a replacement for every pattern \
              in the automaton"
         );
-        let mut dst = Vec::with_capacity(haystack.len());
-        self.try_replace_all_with_bytes(haystack, &mut dst, |mat, _, dst| {
-            dst.extend(replace_with[mat.pattern()].as_ref());
-            true
-        })?;
-        Ok(dst)
+        let matches: Vec<Match> =
+            self.try_find_iter(Input::new(haystack))?.collect();
+        Ok(crate::util::replace::replace_bytes(
+            haystack,
+            &matches,
+            replace_with,
+        )
+        .expect(
+            "matches from try_find_iter are non-overlapping, \
+             in bounds and have valid pattern IDs",
+        ))
     }
 
     /// Replaces all non-overlapping matches in `haystack` by calling the

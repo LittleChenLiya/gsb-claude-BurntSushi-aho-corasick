@@ -1,6 +1,6 @@
 use crate::util::{
     primitives::{PatternID, SmallIndex},
-    search::MatchKind,
+    search::{MatchKind, Span},
 };
 
 /// An error that occurred during the construction of an Aho-Corasick
@@ -252,6 +252,137 @@ impl core::fmt::Display for MatchError {
                     f,
                     "matching with an empty pattern string is not \
                      supported for this operation",
+                )
+            }
+        }
+    }
+}
+
+/// An error that occurred while replacing raw byte matches in a haystack.
+///
+/// This error is used by replacement routines that operate on an explicit
+/// sequence of [`Match`](crate::Match) results, e.g.,
+/// [`AhoCorasick::try_replace_matches_bytes`](crate::AhoCorasick::try_replace_matches_bytes).
+/// Since callers provide the match spans themselves, the spans are validated
+/// before any replacement occurs. In particular, overlapping matches are
+/// always reported as an error rather than being resolved by arbitrarily
+/// choosing one of them.
+///
+/// When the `std` feature is enabled, this implements the `std::error::Error`
+/// trait.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplaceError(alloc::boxed::Box<ReplaceErrorKind>);
+
+impl ReplaceError {
+    /// Create a new error value with the given kind.
+    ///
+    /// This is a more verbose version of the kind-specific constructors, e.g.,
+    /// `ReplaceError::overlapping_matches`.
+    pub fn new(kind: ReplaceErrorKind) -> ReplaceError {
+        ReplaceError(alloc::boxed::Box::new(kind))
+    }
+
+    /// Returns a reference to the underlying error kind.
+    pub fn kind(&self) -> &ReplaceErrorKind {
+        &self.0
+    }
+
+    /// Create a new "overlapping matches" error. This occurs when a match
+    /// in the sequence given starts before the end of the previous match.
+    ///
+    /// This is the same as calling `ReplaceError::new` with a
+    /// [`ReplaceErrorKind::OverlappingMatches`] kind.
+    pub fn overlapping_matches(first: Span, second: Span) -> ReplaceError {
+        ReplaceError::new(ReplaceErrorKind::OverlappingMatches {
+            first,
+            second,
+        })
+    }
+
+    /// Create a new "unknown pattern ID" error. This occurs when a match
+    /// has a pattern ID that has no corresponding replacement.
+    ///
+    /// This is the same as calling `ReplaceError::new` with a
+    /// [`ReplaceErrorKind::UnknownPatternID`] kind.
+    pub fn unknown_pattern_id(pattern: PatternID) -> ReplaceError {
+        ReplaceError::new(ReplaceErrorKind::UnknownPatternID { pattern })
+    }
+
+    /// Create a new "span out of bounds" error. This occurs when a match
+    /// has a span that falls outside of the haystack.
+    ///
+    /// This is the same as calling `ReplaceError::new` with a
+    /// [`ReplaceErrorKind::SpanOutOfBounds`] kind.
+    pub fn span_out_of_bounds(
+        span: Span,
+        haystack_len: usize,
+    ) -> ReplaceError {
+        ReplaceError::new(ReplaceErrorKind::SpanOutOfBounds {
+            span,
+            haystack_len,
+        })
+    }
+}
+
+/// The underlying kind of a [`ReplaceError`].
+///
+/// This is a **non-exhaustive** enum. That means new variants may be added in
+/// a semver-compatible release.
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReplaceErrorKind {
+    /// An error indicating that two matches in the sequence given overlap.
+    /// Overlapping matches are never resolved by choosing one arbitrarily;
+    /// they are always rejected.
+    OverlappingMatches {
+        /// The span of the earlier match.
+        first: Span,
+        /// The span of the match that overlaps with `first`.
+        second: Span,
+    },
+    /// An error indicating that a match has a pattern ID for which no
+    /// replacement was provided.
+    UnknownPatternID {
+        /// The pattern ID that has no corresponding replacement.
+        pattern: PatternID,
+    },
+    /// An error indicating that a match has a span that falls outside of
+    /// the haystack being searched.
+    SpanOutOfBounds {
+        /// The span that falls outside of the haystack.
+        span: Span,
+        /// The length of the haystack.
+        haystack_len: usize,
+    },
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ReplaceError {}
+
+impl core::fmt::Display for ReplaceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match *self.kind() {
+            ReplaceErrorKind::OverlappingMatches { first, second } => {
+                write!(
+                    f,
+                    "overlapping matches are not supported when replacing: \
+                     match at {}..{} overlaps with match at {}..{}",
+                    first.start, first.end, second.start, second.end,
+                )
+            }
+            ReplaceErrorKind::UnknownPatternID { pattern } => {
+                write!(
+                    f,
+                    "pattern ID {} has no corresponding replacement",
+                    pattern.as_usize(),
+                )
+            }
+            ReplaceErrorKind::SpanOutOfBounds { span, haystack_len } => {
+                write!(
+                    f,
+                    "match span {}..{} is out of bounds for haystack \
+                     of length {}",
+                    span.start, span.end, haystack_len,
                 )
             }
         }

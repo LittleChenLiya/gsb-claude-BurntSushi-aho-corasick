@@ -1662,3 +1662,105 @@ fn regression_stream_rare_byte_prefilter() {
 
     run().unwrap()
 }
+
+// Tests for replacing raw byte matches, including matches and replacement
+// fragments that contain invalid UTF-8 bytes.
+
+#[test]
+fn replace_bytes_invalid_utf8() {
+    // A short haystack with invalid UTF-8 bytes. Both the patterns and the
+    // replacement fragments contain non-UTF-8 bytes. Bytes not covered by
+    // any match must be preserved as-is.
+    let patterns: &[&[u8]] = &[b"\xff".as_ref(), b"ab".as_ref()];
+    let ac = AhoCorasick::new(patterns).unwrap();
+    let haystack = b"\x80ab\xff\x81";
+    let got = ac
+        .try_replace_all_bytes(haystack, &[b"\xfe".as_ref(), b"XY".as_ref()])
+        .unwrap();
+    assert_eq!(b"\x80XY\xfe\x81".to_vec(), got);
+
+    // The same replacement through the explicit match API.
+    let matches: Vec<Match> = ac.find_iter(haystack).collect();
+    let got = ac
+        .try_replace_matches_bytes(
+            haystack,
+            &matches,
+            &[b"\xfe".as_ref(), b"XY".as_ref()],
+        )
+        .unwrap();
+    assert_eq!(b"\x80XY\xfe\x81".to_vec(), got);
+}
+
+#[test]
+fn replace_bytes_adjacent_hits() {
+    // Two hits directly adjacent to one another.
+    let ac = AhoCorasick::new(&["aa", "bb"]).unwrap();
+    let haystack = b"xaabby";
+    let matches: Vec<Match> = ac.find_iter(haystack).collect();
+    assert_eq!(std::vec![Match::must(0, 1..3), Match::must(1, 3..5)], matches,);
+    let got =
+        ac.try_replace_matches_bytes(haystack, &matches, &["1", "2"]).unwrap();
+    assert_eq!(b"x12y".to_vec(), got);
+    // The wired-in try_replace_all_bytes agrees.
+    assert_eq!(got, ac.try_replace_all_bytes(haystack, &["1", "2"]).unwrap());
+}
+
+#[test]
+fn replace_bytes_overlapping_patterns_keep_priority() {
+    // Overlapping patterns: the matcher's existing leftmost-first priority
+    // is unchanged, so pattern 0 ("sam") wins over pattern 1 ("samwise").
+    let ac = AhoCorasick::builder()
+        .match_kind(MatchKind::LeftmostFirst)
+        .build(&["sam", "samwise"])
+        .unwrap();
+    let haystack = b"samwise";
+    let matches: Vec<Match> = ac.find_iter(haystack).collect();
+    assert_eq!(
+        std::vec![crate::PatternID::must(0)],
+        matches.iter().map(|m| m.pattern()).collect::<Vec<_>>(),
+    );
+    let got =
+        ac.try_replace_matches_bytes(haystack, &matches, &["A", "B"]).unwrap();
+    assert_eq!(b"Awise".to_vec(), got);
+    assert_eq!(got, ac.try_replace_all_bytes(haystack, &["A", "B"]).unwrap());
+}
+
+#[test]
+fn replace_matches_bytes_overlap_rejected() {
+    // Explicitly supplied overlapping matches must be rejected rather than
+    // resolved by arbitrarily choosing one of them.
+    let ac = AhoCorasick::new(&["ab", "bc"]).unwrap();
+    let matches = &[Match::must(0, 0..2), Match::must(1, 1..3)];
+    let err = ac
+        .try_replace_matches_bytes(b"abc", matches, &["x", "y"])
+        .unwrap_err();
+    assert_eq!(
+        &crate::ReplaceErrorKind::OverlappingMatches {
+            first: crate::Span::from(0..2),
+            second: crate::Span::from(1..3),
+        },
+        err.kind(),
+    );
+}
+
+// A small in-memory fixture demonstrating the byte replacement behavior.
+// Run with `-- --nocapture` (and `--include-ignored` is NOT needed) to see
+// the printed results.
+#[test]
+fn replace_bytes_demo_fixture() {
+    let patterns: &[&[u8]] = &[b"\xff\x00".as_ref(), b"the".as_ref()];
+    let ac = AhoCorasick::new(patterns).unwrap();
+    let haystack = b"\xff\x00the quick \xff\x00";
+    let matches: Vec<Match> = ac.find_iter(haystack).collect();
+    let got = ac
+        .try_replace_matches_bytes(
+            haystack,
+            &matches,
+            &[b"<BIN>".as_ref(), b"THE".as_ref()],
+        )
+        .unwrap();
+    std::println!("haystack: {:?}", haystack.as_slice());
+    std::println!("matches:  {:?}", matches);
+    std::println!("result:   {:?}", got);
+    assert_eq!(b"<BIN>THE quick <BIN>".to_vec(), got);
+}

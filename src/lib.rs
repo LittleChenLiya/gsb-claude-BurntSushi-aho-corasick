@@ -244,7 +244,10 @@ pub use crate::{
         FindOverlappingIter,
     },
     util::{
-        error::{BuildError, MatchError, MatchErrorKind},
+        error::{
+            BuildError, MatchError, MatchErrorKind, ReplaceError,
+            ReplaceErrorKind,
+        },
         primitives::{PatternID, PatternIDError},
         search::{Anchored, Input, Match, MatchKind, Span, StartKind},
     },
